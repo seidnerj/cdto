@@ -13,28 +13,35 @@
 #import "Terminal.h"
 #import "iTerm.h"
 
-NSUInteger linesOfHistory(TerminalTab* tab) {
-   NSString* hist = [[tab history] stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    return [[hist componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] count];
-}
-
 void openInTerminal(NSURL* url) {
     TerminalApplication* terminal = [SBApplication applicationWithBundleIdentifier:@"com.apple.Terminal"];
 
-    TerminalWindow* win = nil;
-    if ([[terminal windows] count] == 1){
-        //get front most and then reference by id
-        win = [[terminal windows] objectAtLocation:@1];
-        win = [[terminal windows] objectWithID: [NSNumber numberWithInteger:win.id]];
+    // Check before any SB call to avoid launching Terminal prematurely
+    bool wasRunning = [terminal isRunning];
+
+    NSString* path = [url path];
+    NSString* escapedPath = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+    NSString* cdCommand = [NSString stringWithFormat:@"cd '%@'", escapedPath];
+
+    TerminalTab* tab;
+    if (!wasRunning) {
+        // Terminal is not running. Launching it creates a default startup window.
+        // Reuse that window instead of opening another one.
+        [terminal activate];
+        TerminalWindow* win = [[terminal windows] objectAtLocation:@1];
+        win = [[terminal windows] objectWithID:[NSNumber numberWithInteger:win.id]];
+        tab = [[win tabs] objectAtLocation:@1];
+        [terminal doScript:cdCommand in:tab];
+    } else {
+        // Terminal is already running - open a new window
+        [terminal open:@[url]];
+        TerminalWindow* newWin = [[terminal windows] objectAtLocation:@1];
+        newWin = [[terminal windows] objectWithID:[NSNumber numberWithInteger:newWin.id]];
+        tab = [[newWin tabs] objectAtLocation:@1];
     }
-    [terminal open:@[url]];
-    //get front most and then reference by id
-    TerminalWindow* newWin = [[terminal windows] objectAtLocation:@1];
-    newWin = [[terminal windows] objectWithID: [NSNumber numberWithInteger:newWin.id]];
-    TerminalTab* newTab = [[newWin tabs] objectAtLocation:@1];
 
     NSString* setName = [[NSUserDefaults standardUserDefaults] stringForKey:@"cdto-new-window-setting"];
-    if(setName != nil && ![setName isEqualToString:@""]) { //setting set
+    if(setName != nil && ![setName isEqualToString:@""]) {
         TerminalSettingsSet* chosenSet = nil;
         for (TerminalSettingsSet *set in [terminal settingsSets]) {
             if([[set name] isEqualToString:setName]){
@@ -42,25 +49,7 @@ void openInTerminal(NSURL* url) {
             }
         }
         if(chosenSet != nil){
-            newTab.currentSettings = chosenSet;
-        }
-    }
-
-    if([[NSUserDefaults standardUserDefaults] boolForKey:@"cdto-close-default-window"]){ //close first launch window
-        if([[win tabs] count] == 1){
-            TerminalTab* tab = [[win tabs]objectAtLocation:@1];
-            if(![tab busy]){
-                //if history has same number of lines as new window
-                // assume automatically opened new window, and close it
-                NSUInteger oldTabLines = linesOfHistory(tab);
-                while([newTab busy]){
-                    [NSThread sleepForTimeInterval:0.1f];
-                }
-                NSUInteger newTabLines = linesOfHistory(newTab);
-                if(oldTabLines == newTabLines){
-                    [win closeSaving:TerminalSaveOptionsNo savingIn:nil];
-                }
-            }
+            tab.currentSettings = chosenSet;
         }
     }
 
@@ -73,30 +62,39 @@ void openIniTerm(NSURL* url) {
     // Escape single quotes in the path for AppleScript
     NSString* escapedPath = [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
 
-    // Use AppleScript for more reliable iTerm integration
-    NSString* script = [NSString stringWithFormat:
-        @"tell application \"iTerm\"\n"
-        @"    activate\n"
-        @"    try\n"
-        @"        set newWindow to (create window with default profile)\n"
-        @"        tell current session of newWindow\n"
-        @"            write text \"cd '%@'; clear\"\n"
-        @"        end tell\n"
-        @"    on error\n"
-        @"        tell current window\n"
-        @"            tell current session\n"
-        @"                write text \"cd '%@'; clear\"\n"
-        @"            end tell\n"
-        @"        end tell\n"
-        @"    end try\n"
-        @"end tell", escapedPath, escapedPath];
+    // Check if iTerm is running before launching it
+    bool wasRunning = [[SBApplication applicationWithBundleIdentifier:@"com.googlecode.iterm2"] isRunning];
+
+    NSString* script;
+    if (!wasRunning) {
+        // iTerm is not running. Launching it creates a default startup window.
+        // Reuse that window instead of creating another one.
+        script = [NSString stringWithFormat:
+            @"tell application \"iTerm\"\n"
+            @"    activate\n"
+            @"    tell current window\n"
+            @"        tell current session\n"
+            @"            write text \"cd '%@'; clear\"\n"
+            @"        end tell\n"
+            @"    end tell\n"
+            @"end tell", escapedPath];
+    } else {
+        // iTerm is already running - create a new window
+        script = [NSString stringWithFormat:
+            @"tell application \"iTerm\"\n"
+            @"    activate\n"
+            @"    set newWindow to (create window with default profile)\n"
+            @"    tell current session of newWindow\n"
+            @"        write text \"cd '%@'; clear\"\n"
+            @"    end tell\n"
+            @"end tell", escapedPath];
+    }
 
     NSAppleScript* appleScript = [[NSAppleScript alloc] initWithSource:script];
     NSDictionary* errorInfo = nil;
     [appleScript executeAndReturnError:&errorInfo];
 
     if (errorInfo) {
-        // Fallback to Terminal if iTerm fails
         NSLog(@"iTerm failed, falling back to Terminal: %@", errorInfo);
         openInTerminal(url);
     }

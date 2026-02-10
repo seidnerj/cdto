@@ -34,12 +34,6 @@ defaults write name.tuley.jay.cd-to cdto-terminal-app -string "com.apple.Termina
 defaults write name.tuley.jay.cd-to cdto-terminal-app -string "com.googlecode.iterm2"
 ```
 
-To turn on feature that identifies automatically opened  Terminal windows, and closes them when using *cd to*.
-
-```bash
-defaults write name.tuley.jay.cd-to cdto-close-default-window -bool true
-```
-
 To change the window scheme for Terminal Windows from default.
 
 _Eg. if you wanted cd to windows to be "Red Sands"_
